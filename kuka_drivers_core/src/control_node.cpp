@@ -14,6 +14,7 @@
 
 #include <sys/mman.h>
 
+#include <chrono>
 #include <memory>
 #include <thread>
 
@@ -125,9 +126,22 @@ int main(int argc, char ** argv)
 
           if (is_configured)
           {
+            // The robot paces this loop: read() blocks until the next motion state arrives, so a
+            // cycle normally lasts about one period and needs no sleep. But read() can also return
+            // without blocking: on Jazzy, ros2_control skips read() and write() while the
+            // hardware component is locked, e.g. for the seconds its activation takes. The loop
+            // would then spin at real-time priority and starve lower-priority threads on the
+            // core, such as the network interrupt threads. A minimum cycle duration well below
+            // the period prevents that. It never applies while read() blocks, and after an
+            // overrun it delays reading an already waiting motion state by less than min_cycle.
+            const auto min_cycle = dt.to_chrono<std::chrono::nanoseconds>() / 4;
+            const auto cycle_start = std::chrono::steady_clock::now();
+
             controller_manager->read(controller_manager->get_trigger_clock()->now(), dt);
             controller_manager->update(controller_manager->get_trigger_clock()->now(), dt);
             controller_manager->write(controller_manager->get_trigger_clock()->now(), dt);
+
+            std::this_thread::sleep_until(cycle_start + min_cycle);
           }
           else
           {
